@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import importlib.util
+from io import BytesIO
 import json
 import multiprocessing
 import re
@@ -12,7 +13,10 @@ from os import environ, getcwd, getpid, kill, listdir, makedirs, path, remove, g
 from typing import Callable
 from fontTools.ttLib import TTFont, newTable
 from fontTools.feaLib.builder import addOpenTypeFeatures, addOpenTypeFeaturesFromString
+from ttfautohint import StemWidthMode, ttfautohint
 from source.py.utils import (
+    add_ital_axis_to_stat,
+    adjust_line_height,
     check_font_patcher,
     check_directory_hash,
     get_directory_hash,
@@ -35,22 +39,60 @@ from source.py.feature import (
     normal_enabled_features,
 )
 
-FONT_VERSION = "v7.3"
+
+FONT_VERSION = "v7.4"
 # =========================================================================================
 
 
 def check_ftcli():
-    package_name = "foundryToolsCLI"
-    package_installed = importlib.util.find_spec(package_name) is not None
+    package_name_v1 = "foundryToolsCLI"
+    package_spec_v1 = importlib.util.find_spec(package_name_v1)
+    package_name_v2 = "foundrytools_cli"
+    package_spec_v2 = importlib.util.find_spec(package_name_v2)
 
-    if not package_installed:
+    if not package_spec_v1 and not package_spec_v2:
         print(
-            f"❗ {package_name} is not found. Please run `pip install foundrytools-cli==1.1.22`"
+            "❗ foundrytools-cli is not found. Please run `pip install foundrytools-cli`"
         )
+        exit(1)
+
+    try:
+        installed_package = importlib.import_module(
+            package_name_v2 if package_spec_v2 else package_name_v1
+        )
+        version = getattr(installed_package, "__version__", None)
+        if version and version < "2":
+            print(
+                f"❗ foundrytools-cli version {version} is too old. Please run `pip install --upgrade foundrytools-cli`"
+            )
+            exit(1)
+    except Exception as e:
+        print(f"❗ Error checking foundrytools-cli version: {e}")
         exit(1)
 
 
 # =========================================================================================
+
+
+def parse_scale_factor(value) -> tuple[float, float]:
+    if isinstance(value, float):
+        return (value, value)
+    if isinstance(value, list):
+        return (float(value[0]), float(value[1]))
+
+    # Split the value by comma to handle width and height
+    parts = value.split(",")
+
+    if len(parts) == 1:
+        # Single number case
+        return float(parts[0]), float(parts[0])  # Same scale for width and height
+    elif len(parts) == 2:
+        # Two numbers case
+        return float(parts[0]), float(parts[1])
+    else:
+        raise argparse.ArgumentTypeError(
+            "Invalid scale factor format. Use <factor> or <w_factor>,<h_factor>."
+        )
 
 
 def parse_args(args: list[str] | None = None):
@@ -126,6 +168,23 @@ def parse_args(args: list[str] | None = None):
         help="Remove all the ligatures",
     )
     feature_group.add_argument(
+        "--keep-infinite-arrow",
+        default=None,
+        action="store_true",
+        help="Keep infinite arrow ligatures in hinted font (Removed by default)",
+    )
+    feature_group.add_argument(
+        "--remove-tag-liga",
+        default=None,
+        action="store_true",
+        help="Remove plain text tag ligatures like `[TODO]`",
+    )
+    feature_group.add_argument(
+        "--line-height",
+        type=float,
+        help="Scale factor for line height (e.g. 1.1)",
+    )
+    feature_group.add_argument(
         "--nf-mono",
         action="store_true",
         help="Fixed Nerd Font icons' width",
@@ -137,8 +196,8 @@ def parse_args(args: list[str] | None = None):
     )
     feature_group.add_argument(
         "--cn-scale-factor",
-        type=float,
-        help="Scale factor for CN / JP glyphs (e.g. 1.1)",
+        type=parse_scale_factor,
+        help="Scale factor for CN / JP glyphs. Format: <factor> or <width_factor>,<height_factor> (e.g. 1.1 or 1.2,1.1)",
     )
 
     build_group = parser.add_argument_group("Build Options")
@@ -235,6 +294,10 @@ class FontConfig:
         self.use_hinted = True
         # whether to enable ligature
         self.enable_liga = True
+        # whether to enable infinite arrow ligatures in hinted font
+        self.keep_infinite_arrow = False
+        # whether to remove plain text ligatures like `[TODO]`
+        self.remove_tag_liga = False
         self.feature_freeze = {
             "cv01": "ignore",
             "cv02": "ignore",
@@ -301,11 +364,14 @@ class FontConfig:
             # whether to use pre-instantiated static CN font as base font
             "use_static_base_font": True,
             # scale factor for CN glyphs
-            "scale_factor": 1.0,
+            "scale_factor": (1.0, 1.0),
         }
         self.glyph_width = 600
         self.glyph_width_cn_narrow = 1000
         self.use_normal_preset = False
+        self.ttfautohint_param = {}
+        self.line_height_factor = 1.0
+
         self.__load_config()
         self.__load_args(args)
 
@@ -320,6 +386,7 @@ class FontConfig:
         if major.startswith("v"):
             major = major[1:]
 
+        self.version = f"{major}.{minor}"
         self.version_str = f"Version {major}.{minor:03}"
 
     def __load_config(self):
@@ -329,9 +396,12 @@ class FontConfig:
                 data = json.load(f)
                 for prop in [
                     "family_name",
+                    "pool_size",
                     "use_hinted",
                     "enable_liga",
-                    "pool_size",
+                    "ttfautohint_param",
+                    "keep_infinite_arrow",
+                    "line_height",
                     "github_mirror",
                     "feature_freeze",
                     "nerd_font",
@@ -346,6 +416,8 @@ class FontConfig:
                             if type(val) is not dict
                             else {**getattr(self, prop), **val},
                         )
+                if "ligature" in data and data["ligature"] is not None:
+                    self.enable_liga = data["ligature"]
 
         except FileNotFoundError:
             print(f"🚨 Config file not found: {config_file_path}, use default config")
@@ -353,7 +425,7 @@ class FontConfig:
             print(f"❗ Error: Invalid JSON in config file: {config_file_path}")
             exit(1)
         except Exception as e:
-            print(f"❗ An unexpected error occurred: {e}")
+            print(f"❗ An unexpected error occurred while parsing config file: {e}")
             exit(1)
 
     def __load_args(self, args):
@@ -383,6 +455,15 @@ class FontConfig:
         if args.nerd_font is not None:
             self.nerd_font["enable"] = args.nerd_font
 
+        if args.keep_infinite_arrow:
+            self.keep_infinite_arrow = True
+
+        if args.remove_tag_liga:
+            self.remove_tag_liga = True
+
+        if args.line_height is not None:
+            self.line_height_factor = args.line_height
+
         if args.nf_mono:
             self.nerd_font["mono"] = args.nf_mono
 
@@ -394,6 +475,8 @@ class FontConfig:
 
         if args.cn_scale_factor:
             self.cn["scale_factor"] = args.cn_scale_factor
+        if isinstance(self.cn["scale_factor"], (float, list)):
+            self.cn["scale_factor"] = parse_scale_factor(self.cn["scale_factor"])
 
         if args.ttf_only:
             self.ttf_only = True
@@ -454,6 +537,7 @@ class FontConfig:
         is_italic: bool,
         is_cn: bool,
         is_variable: bool,
+        is_hinted: bool | None = None,
         fea_path: str | None = None,
     ):
         if self.apply_fea_file:
@@ -465,11 +549,16 @@ class FontConfig:
                 )
             return
 
+        if is_hinted and self.keep_infinite_arrow:
+            return
+
         fea_str = generate_fea_string(
             is_italic=is_italic,
             is_cn=is_cn,
             is_normal=self.use_normal_preset,
             is_calt=self.enable_liga,
+            enable_infinite=True if is_hinted is None else self.keep_infinite_arrow,
+            enable_tag=not self.remove_tag_liga,
             variable_enabled_feature_list=[
                 key for key, val in self.feature_freeze.items() if is_enable(val)
             ]
@@ -544,7 +633,9 @@ class BuildOption:
             self.cn_suffix = self.cn_suffix_compact = "CN"
         self.output_cn = joinPaths(self.output_dir, self.cn_suffix_compact)
 
-    def should_use_font_patcher(self, config: FontConfig) -> bool:
+    def should_use_font_patcher(
+        self, config: FontConfig, should_exit: bool = True
+    ) -> bool:
         if not (
             len(config.nerd_font["extra_args"]) > 0
             or config.nerd_font["use_font_patcher"]
@@ -552,16 +643,20 @@ class BuildOption:
         ):
             return False
 
-        if not check_font_patcher(
-            version=config.nerd_font["version"],
-            github_mirror=self.github_mirror,
-        ):
+        bin_path = config.nerd_font["font_forge_bin"]
+        if (not bin_path or not path.exists(bin_path)) and should_exit:
+            print(
+                f"FontForge bin ({bin_path}) not found, cannot build with Nerd Font Patcher"
+            )
             exit(1)
 
-        if not path.exists(config.nerd_font["font_forge_bin"]):
-            print(
-                f"FontForge bin ({config.nerd_font['font_forge_bin']}) not found, cannot build with Nerd Font Patcher"
+        if (
+            not check_font_patcher(
+                version=config.nerd_font["version"],
+                github_mirror=self.github_mirror,
             )
+            and should_exit
+        ):
             exit(1)
 
         return True
@@ -666,6 +761,7 @@ class BuildOption:
             fn=partial(optimize_cn_base, base_dir=cn_static_dir),
             dir=cn_static_dir,
         )
+        run(f"ftcli name del-mac-names -r {cn_static_dir}")
         with open(f"{self.cn_static_dir}.sha256", "w") as f:
             f.write(get_directory_hash(self.cn_static_dir))
             f.flush()
@@ -676,7 +772,9 @@ class BuildOption:
     ) -> bool:
         if not path.isdir(dir):
             return False
-        return len([f for f in listdir(dir) if end is None or f.endswith(end)]) >= minCount
+        return (
+            len([f for f in listdir(dir) if end is None or f.endswith(end)]) >= minCount
+        )
 
 
 def handle_ligatures(
@@ -696,7 +794,7 @@ def handle_ligatures(
 
 def instantiate_cn_var(f: str, base_dir: str, output_dir: str):
     run(
-        f"ftcli converter vf2i -out {output_dir} {joinPaths(base_dir, f)}",
+        f"ftcli converter var2static -out {output_dir} {joinPaths(base_dir, f)}",
         log=True,
     )
 
@@ -704,10 +802,9 @@ def instantiate_cn_var(f: str, base_dir: str, output_dir: str):
 def optimize_cn_base(f: str, base_dir: str):
     font_path = joinPaths(base_dir, f)
     print(f"✨ Optimize {font_path}")
-    run(f"ftcli ttf fix-contours {font_path}")
-    run(f"ftcli ttf remove-overlaps {font_path}")
+    run(f"ftcli font correct-contours {font_path}")
     run(
-        f"ftcli utils del-table -t kern -t GPOS {font_path}",
+        f"ftcli font del-table -t kern -t GPOS {font_path}",
     )
 
 
@@ -760,10 +857,6 @@ def parse_style_name(style_name_compact: str, skip_subfamily_list: list[str]):
 
 #     for feature in features_to_remove:
 #         gsub.table.FeatureList.FeatureRecord.remove(feature)
-
-
-def drop_mac_names(dir: str):
-    run(f"ftcli name del-mac-names -r {dir}")
 
 
 def rename_glyph_name(
@@ -840,7 +933,7 @@ def get_unique_identifier(
 
 
 def change_glyph_width_or_scale(
-    font: TTFont, match_width: int, target_width: int, scale_factor: float
+    font: TTFont, match_width: int, target_width: int, scale_factor: tuple[float, float]
 ):
     font["hhea"].advanceWidthMax = target_width  # type: ignore
     for name in font.getGlyphOrder():
@@ -852,12 +945,13 @@ def change_glyph_width_or_scale(
             font["hmtx"][name] = (target_width, lsb)  # type: ignore
             continue
 
-        glyph.coordinates.scale((scale_factor, scale_factor))
+        scale_w, scale_h = scale_factor
+        glyph.coordinates.scale((scale_w, scale_h))
         glyph.xMin, glyph.yMin, glyph.xMax, glyph.yMax = (
             glyph.coordinates.calcIntBounds()
         )
 
-        scaled_width = int(round(width * scale_factor))
+        scaled_width = int(round(width * scale_w))
         delta = (target_width - scaled_width) / 2
 
         glyph.coordinates.translate((delta, 0))
@@ -906,13 +1000,12 @@ def build_mono(f: str, font_config: FontConfig, build_option: BuildOption):
 
     run(f"ftcli fix italic-angle {source_path}")
     run(f"ftcli fix monospace {source_path}")
-    run(f"ftcli fix strip-names {source_path}")
+    run(f"ftcli name strip-names {source_path}")
+    run(f"ftcli font correct-contours {source_path}")
 
-    if font_config.debug:
+    if not font_config.debug:
         run(f"ftcli ttf dehint {source_path}")
-    else:
-        # dehint, remove overlap and fix contours
-        run(f"ftcli ttf fix-contours --silent {source_path}")
+        run(f"ftcli fix transformed-components {source_path}")
 
     font = TTFont(source_path)
 
@@ -963,6 +1056,8 @@ def build_mono(f: str, font_config: FontConfig, build_option: BuildOption):
         freeze_config=font_config.feature_freeze,
     )
 
+    adjust_line_height(font, font_config.line_height_factor)
+
     verify_glyph_width(
         font=font,
         expect_widths=font_config.get_valid_glyph_width_list(),
@@ -972,11 +1067,6 @@ def build_mono(f: str, font_config: FontConfig, build_option: BuildOption):
     remove(source_path)
     target_path = joinPaths(build_option.output_ttf, f"{postscript_name}.ttf")
     font.save(target_path)
-    font.close()
-
-    # Autohint version
-    print(f"Auto hint {postscript_name}.ttf")
-    run(f"ftcli ttf autohint {target_path} -out {build_option.output_ttf_hinted}")
 
     if font_config.ttf_only:
         return
@@ -992,13 +1082,72 @@ def build_mono(f: str, font_config: FontConfig, build_option: BuildOption):
         build_option.output_otf, path.basename(target_path).replace(".ttf", ".otf")
     )
     print(f"Convert {postscript_name}.ttf to OTF")
-    run(
-        f"ftcli converter ttf2otf --silent {target_path} -out {build_option.output_otf}"
-    )
+    run(f"ftcli converter ttf2otf {target_path} -out {build_option.output_otf}")
     if not font_config.debug:
         print(f"Optimize {postscript_name}.otf")
-        run(f"ftcli otf fix-contours --silent {_otf_path}")
-        run(f"ftcli otf fix-version {_otf_path}")
+        run(f"ftcli font correct-contours {_otf_path}")
+        run(f"ftcli cff set-names --version {font_config.version} {_otf_path}")
+
+
+def build_mono_autohint(f: str, font_config: FontConfig, build_option: BuildOption):
+    style_compact = f.split("-")[-1].split(".")[0]
+    postscript_name = f"{font_config.family_name_compact}-{style_compact}"
+    print(f"👉 Auto hint {postscript_name}.ttf")
+
+    source_path = joinPaths(build_option.output_ttf, f)
+    font = TTFont(source_path)
+    font_config.patch_fea_string(
+        font=font,
+        issue_fea_dir=build_option.output_dir,
+        is_italic="Italic" in style_compact,
+        is_cn=False,
+        is_variable=False,
+        is_hinted=True,
+    )
+    param: dict | None = font_config.ttfautohint_param
+
+    buf = BytesIO()
+    font.save(buf)
+    font.close()
+
+    # https://freetype.org/ttfautohint/doc/ttfautohint.html#options
+    # Also see `ttfautohint.options.USER_OPTIONS`
+    options = {
+        "in_buffer": buf.getvalue(),
+        "reference_file": joinPaths(
+            build_option.output_ttf, f"{font_config.family_name_compact}-Regular.ttf"
+        ),
+        "out_file": joinPaths(build_option.output_ttf_hinted, f"{postscript_name}.ttf"),
+    }
+
+    def parse_stem_width_mode(mode: str) -> StemWidthMode:
+        if mode == "natural":
+            return StemWidthMode.NATURAL
+        elif mode == "strong":
+            return StemWidthMode.STRONG
+        elif mode == "quantized":
+            return StemWidthMode.QUANTIZED
+        else:
+            raise ValueError(f"Unknown stem width mode: {mode}")
+
+    if param:
+        options.update(param)
+        if "stem_width_mode" in param:
+            del options["stem_width_mode"]
+            if "gray" in param:
+                options["gray_stem_width_mode"] = parse_stem_width_mode(
+                    param["stem_width_mode"]["gray"]
+                )
+            if "gdi_cleartype" in param:
+                options["gdi_cleartype_stem_width_mode"] = parse_stem_width_mode(
+                    param["stem_width_mode"]["gdi_cleartype"]
+                )
+            if "dw_cleartype" in param:
+                options["dw_cleartype_stem_width_mode"] = parse_stem_width_mode(
+                    param["stem_width_mode"]["dw_cleartype"]
+                )
+
+    ttfautohint(**options)
 
 
 def build_nf_by_prebuild_nerd_font(
@@ -1029,12 +1178,22 @@ def build_nf_by_font_patcher(
     if font_config.nerd_font["mono"]:
         _nf_args += ["--mono"]
 
-    _nf_args += font_config.nerd_font["extra_args"]
+    extra_args = font_config.nerd_font["extra_args"]
+    _nf_args += extra_args
 
     run(_nf_args + [joinPaths(build_option.ttf_base_dir, font_basename)])
+
     nf_file_name = "NerdFont"
-    if font_config.nerd_font["mono"]:
+    if (
+        font_config.nerd_font["mono"]
+        or "-s" in extra_args
+        or "--mono" in extra_args
+        or "--single-width-glyphs" in extra_args
+    ):
         nf_file_name += "Mono"
+    elif "--variable-width-glyphs" in extra_args:
+        nf_file_name += "Propo"
+
     _path = joinPaths(
         build_option.output_nf, font_basename.replace("-", f"{nf_file_name}-")
     )
@@ -1084,6 +1243,9 @@ def build_nf(
         preferred_family_name=f"{font_config.family_name} NF",
         preferred_style_name=style_in_17,
     )
+
+    adjust_line_height(nf_font, font_config.line_height_factor)
+
     verify_glyph_width(
         font=nf_font,
         expect_widths=font_config.get_valid_glyph_width_list(),
@@ -1164,9 +1326,9 @@ def build_cn(f: str, font_config: FontConfig, build_option: BuildOption):
     target_width = (
         font_config.glyph_width_cn_narrow if font_config.cn["narrow"] else None
     )
-    scale_factor = (
+    scale_factor: tuple[float, float] | None = (
         font_config.cn["scale_factor"]
-        if font_config.cn["scale_factor"] != 1.0
+        if font_config.cn["scale_factor"] != (1.0, 1.0)
         else None
     )
     if target_width or scale_factor:
@@ -1185,9 +1347,9 @@ def build_cn(f: str, font_config: FontConfig, build_option: BuildOption):
             target_width = match_width
 
         if scale_factor:
-            print(f"Scale CN glyph to {scale_factor}x")
+            print(f"Scale CN / JP glyph to ({scale_factor[0]}x, {scale_factor[1]}x)")
         else:
-            scale_factor = 1
+            scale_factor = (1.0, 1.0)
 
         change_glyph_width_or_scale(
             font=cn_font,
@@ -1212,11 +1374,14 @@ def build_cn(f: str, font_config: FontConfig, build_option: BuildOption):
         }
         cn_font["meta"] = meta
 
+    adjust_line_height(cn_font, font_config.line_height_factor)
+
     verify_glyph_width(
         font=cn_font,
         expect_widths=font_config.get_valid_glyph_width_list(True),
         file_name=postscript_name,
     )
+
     target_path = joinPaths(
         build_option.output_cn,
         f"{postscript_name}.ttf",
@@ -1291,11 +1456,13 @@ def main(args: list[str] | None = None, version: str | None = None):
     build_option.load_cn_dir_and_suffix(font_config.should_build_nf_cn())
 
     if parsed_args.dry:
-        print("font_config:", json.dumps(font_config.__dict__, indent=4))
-        if not is_ci():
-            print(
-                "use font patcher:", build_option.should_use_font_patcher(font_config)
-            )
+        font_config.nerd_font["use_font_patcher"] = (
+            build_option.should_use_font_patcher(config=font_config, should_exit=False)
+        )
+        if is_ci():
+            print(json.dumps(font_config.__dict__, indent=4))
+        else:
+            print("font_config:", json.dumps(font_config.__dict__, indent=4))
             print("build_option:", json.dumps(build_option.__dict__, indent=4))
             print("parsed_args:", json.dumps(parsed_args.__dict__, indent=4))
         return
@@ -1314,6 +1481,8 @@ def main(args: list[str] | None = None, version: str | None = None):
 
     makedirs(build_option.output_dir, exist_ok=True)
     makedirs(build_option.output_variable, exist_ok=True)
+    makedirs(build_option.output_ttf, exist_ok=True)
+    makedirs(build_option.output_ttf_hinted, exist_ok=True)
 
     start_time = time.time()
     print(
@@ -1373,6 +1542,10 @@ def main(args: list[str] | None = None, version: str | None = None):
                 ),
                 is_skip_subfamily=True,
             )
+
+            if is_italic:
+                add_ital_axis_to_stat(font)
+
             verify_glyph_width(
                 font=font,
                 expect_widths=font_config.get_valid_glyph_width_list(),
@@ -1390,31 +1563,37 @@ def main(args: list[str] | None = None, version: str | None = None):
         print("\n✨ Instatiate and optimize fonts...\n")
 
         print("Check and optimize variable fonts")
-        if not font_config.debug:
-            run(f"ftcli fix decompose-transformed {build_option.output_variable}")
-
         run(f"ftcli fix italic-angle {build_option.output_variable}")
         run(f"ftcli fix monospace {build_option.output_variable}")
+        # run(f"ftcli fix vertical-metrics {build_option.output_variable}")
+        run(f"ftcli name del-mac-names -r {build_option.output_variable}")
+
         print("Instantiate TTF")
         run(
-            f"ftcli converter vf2i -out {build_option.output_ttf} {build_option.output_variable}"
-        )
-
-        _build_mono = partial(
-            build_mono, font_config=font_config, build_option=build_option
+            f"ftcli converter var2static -out {build_option.output_ttf} {build_option.output_variable}"
         )
 
         run_build(
-            font_config.pool_size, _build_mono, build_option.output_ttf, target_styles
+            font_config.pool_size,
+            partial(
+                build_mono,
+                font_config=font_config,
+                build_option=build_option,
+            ),
+            build_option.output_ttf,
+            target_styles,
         )
 
-        drop_mac_names(build_option.output_variable)
-        drop_mac_names(build_option.output_ttf)
-
-        if not font_config.ttf_only:
-            drop_mac_names(build_option.output_ttf_hinted)
-            drop_mac_names(build_option.output_otf)
-            drop_mac_names(build_option.output_woff2)
+        run_build(
+            font_config.pool_size,
+            partial(
+                build_mono_autohint,
+                font_config=font_config,
+                build_option=build_option,
+            ),
+            build_option.output_ttf,
+            target_styles,
+        )
 
     # =========================================================================================
     # ====================================   Build NF   =======================================
@@ -1430,21 +1609,22 @@ def main(args: list[str] | None = None, version: str | None = None):
             else build_nf_by_prebuild_nerd_font
         )
 
-        _build_fn = partial(
-            build_nf,
-            get_ttfont=get_ttfont,
-            font_config=font_config,
-            build_option=build_option,
-        )
         _version = font_config.nerd_font["version"]
         print(
             f"\n🔧 Patch Nerd-Font v{_version} using {'Font Patcher' if use_font_patcher else 'prebuild base font'}...\n"
         )
 
         run_build(
-            font_config.pool_size, _build_fn, build_option.output_ttf, target_styles
+            font_config.pool_size,
+            partial(
+                build_nf,
+                get_ttfont=get_ttfont,
+                font_config=font_config,
+                build_option=build_option,
+            ),
+            build_option.output_ttf,
+            target_styles,
         )
-        drop_mac_names(build_option.output_ttf)
         build_option.is_nf_built = True
 
     # =========================================================================================
@@ -1458,17 +1638,21 @@ def main(args: list[str] | None = None, version: str | None = None):
                 f"\n🔎 Build CN fonts {'with Nerd-Font' if font_config.should_build_nf_cn() else ''}...\n"
             )
             makedirs(build_option.output_cn, exist_ok=True)
-            fn = partial(build_cn, font_config=font_config, build_option=build_option)
 
             run_build(
-                font_config.pool_size, fn, build_option.cn_base_font_dir, target_styles
+                font_config.pool_size,
+                partial(
+                    build_cn,
+                    font_config=font_config,
+                    build_option=build_option,
+                ),
+                build_option.cn_base_font_dir,
+                target_styles,
             )
 
             if font_config.cn["use_hinted"]:
                 print("Auto hinting all glyphs")
                 run(f"ftcli ttf autohint {build_option.output_cn}")
-
-            drop_mac_names(build_option.cn_base_font_dir)
 
         _build_cn()
 

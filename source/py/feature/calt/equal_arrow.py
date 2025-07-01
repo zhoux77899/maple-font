@@ -1,19 +1,19 @@
 from source.py.feature import ast
 from source.py.feature.base.clazz import cls_normal_separator, cls_question
-from source.py.feature.calt._infinite_utils import (
-    use_infinite,
-    ignore_when_using_infinite,
-    infinite_rules,
-)
+from source.py.feature.calt._infinite_utils import infinite_helper, infinite_rules
 
 
 # Inspired by Fira Code, source:
 # https://github.com/tonsky/FiraCode/blob/master/features/calt/equal_arrows.fea
 def infinite_equals():
+    if not infinite_helper.get():
+        return None
+
     eq_start = ast.gly_seq("=", "sta")
     eq_middle = ast.gly_seq("=", "mid")
     eq_end = ast.gly_seq("=", "end")
     cls_start = ast.Clazz("EqualStart", [eq_start, eq_middle])
+    colon_case = ast.gly(":", ".case", True)
 
     return ast.Lookup(
         "infinite_equal",
@@ -30,6 +30,10 @@ def infinite_equals():
                 "=>=",
                 "=======",
                 ">=<",
+                ":=",
+                "=:",
+                ":=:",
+                "=:=",
             ]
         ),
         [
@@ -41,24 +45,28 @@ def infinite_equals():
             ast.ign(["(", cls_question, "<"], "=", ast.cls("<", ">", "|", "=")),
             ast.ign(["(", cls_question, "<"], "=", ["=", ast.cls("<", ">", "|")]),
             # Disable >=</
-            ast.ign(None, ">", ["=", ast.cls(ast.SPC, ">")]),
+            ast.ign(None, ">", ["=", ast.SPC, ast.gly("</")]),
             ast.ign(None, ">", ["=", "<", "/"]),
             # Disable >==</
-            ast.ign(None, ">", ["=", "=", ast.SPC]),
+            ast.ign(None, ">", ["=", "=", ast.SPC, ast.gly("</")]),
             ast.ign(None, ">", ["=", "=", "<", "/"]),
             # Disable >===</
-            ast.ign(None, ">", ["=", "=", "=", ast.SPC]),
+            ast.ign(None, ">", ["=", "=", "=", ast.SPC, ast.gly("</")]),
             ast.ign(None, ">", ["=", "=", "=", "<", "/"]),
-            ast.ign(">", "=", ["=", "=", ast.SPC]),
+            ast.ign(">", "=", ["=", "=", ast.SPC, ast.gly("</")]),
             ast.ign(">", "=", ["=", "=", "<", "/"]),
-            ast.ign([">", "="], "=", ["=", ast.SPC]),
+            ast.ign([">", "="], "=", ["=", ast.SPC, ast.gly("</")]),
             ast.ign([">", "="], "=", ["=", "<", "/"]),
             *infinite_rules(
                 glyph="=",
                 cls_start=cls_start,
                 symbols=["<", ">", "|"],
                 extra_rules=[
-                    ast.subst(eq_end, ":", "=", ast.gly(":", ".case", True)),
+                    # Colon support
+                    ast.ign(":", ":", "="),
+                    ast.ign(eq_end, ":", ":"),
+                    ast.subst(None, ":", "=", colon_case),
+                    ast.subst(ast.cls(["=", eq_end]), ":", None, colon_case),
                     # Disable =<
                     ast.subst(None, "=", ["<", "="], eq_start),
                     ast.ign(None, "=", "<"),
@@ -70,7 +78,7 @@ def infinite_equals():
 
 def get_lookup(cls_var: ast.Clazz):
     return [
-        ignore_when_using_infinite(
+        infinite_helper.ignore_when_using(
             ast.subst_liga(
                 "<=>",
                 ign_prefix=ast.cls("<", "="),
@@ -101,7 +109,7 @@ def get_lookup(cls_var: ast.Clazz):
                 ast.ign(["(", cls_question], "<", "="),
             ],
         ),
-        ignore_when_using_infinite(
+        infinite_helper.ignore_when_using(
             ast.subst_liga(
                 "<==",
                 ign_prefix=ast.cls("<", "="),
@@ -147,7 +155,7 @@ def get_lookup(cls_var: ast.Clazz):
             ign_prefix=ast.cls(">", "="),
             ign_suffix=ast.cls(">", "="),
         ),
-        ignore_when_using_infinite(
+        infinite_helper.ignore_when_using(
             ast.subst_liga(
                 "<=|",
                 ign_prefix="<",
@@ -180,14 +188,16 @@ def get_lookup(cls_var: ast.Clazz):
                 ast.ign(["(", cls_question, "<"], "=", ["=", "="]),
             ],
         ),
-        ast.subst_liga(
-            "===",
-            lookup_name=ast.gly("===", "__ALT__"),
-            desc=">===</",
-            surround=[
-                (">", [ast.SPC, ast.gly("</")]),
-                (">", ["<", "/"]),
-            ]
+        infinite_helper.ignore_when_not_using(
+            ast.subst_liga(
+                "===",
+                lookup_name=ast.gly("===", "__ALT__"),
+                desc=">===</",
+                surround=[
+                    (">", [ast.SPC, ast.gly("</")]),
+                    (">", ["<", "/"]),
+                ],
+            )
         ),
         ast.subst_liga(
             "!=",
@@ -225,7 +235,7 @@ def get_lookup(cls_var: ast.Clazz):
                 ast.ign(["(", cls_question, "<"], "=", ["!", "="]),
             ],
         ),
-        ignore_when_using_infinite(
+        infinite_helper.ignore_when_using(
             ast.subst_liga(
                 "=<=",
                 ign_prefix=ast.cls("=", ">", "<", "|"),
@@ -248,5 +258,5 @@ def get_lookup(cls_var: ast.Clazz):
             ign_prefix=ast.cls("|", "="),
             ign_suffix=ast.cls(">", "|", "="),
         ),
-        infinite_equals() if use_infinite() else None,
+        infinite_equals(),
     ]

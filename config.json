@@ -3,7 +3,8 @@
   "family_name": "Maple Mono JetBrains",
   "use_hinted": true,
   "pool_size": 4,
-  "ligature": true,
+  "enable_ligature": true,
+  "ttfautohint_param": {},
   "feature_freeze": {
     "cv01": "enable",
     "cv02": "ignore",

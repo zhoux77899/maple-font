@@ -522,7 +522,7 @@ fonts.packages = with pkgs; [
 
 ### 浏览器中构建
 
-进入 [特性测试页面](https://font.subf.dev/zh-cn/playground)，点击左下角的 “自定义构建” 按钮
+进入 [特性测试页面](https://font.subf.dev/zh-cn/playground)，点击左下角的“自定义构建”按钮
 
 ### 使用 Github Actions
 
@@ -600,6 +600,10 @@ OpenType Feature 可以控制字体的内置变体和连字。您可以通过修
 
 如果你想通过修改 OpenType Feature 文件实现，运行 `build.py` 时添加 `--apply-fea-file` 参数，会读取 [`source/features/{regular,italic}.fea`](./source/features) 的特性文件并加载。
 
+#### 无限箭头连字
+
+受 Fira Code 的启发，从 v7.3 开始，该字体默认启用无限箭头连字。由于某种原因，在使用 Hinted 字体时连字会错位，因此在 v7.4 的 Hinted 版本中默认将其移除。您可以在 `config.json` 中设置 `"keep_infinite_arrow": true`，或在命令行标志中添加 `--keep-infinite-arrow`。详情见 [#508](https://github.com/subframe7536/maple-font/issues/508)
+
 ### 中文版本
 
 默认情况下不会生成中文字体，运行 `python build.py` 时添加 `--cn` 参数，中文基字（约 130 MB）将从 GitHub 下载。
@@ -624,7 +628,8 @@ OpenType Feature 可以控制字体的内置变体和连字。您可以通过修
 
 ```
 usage: build.py [-h] [-v] [-d] [--debug] [-n] [--feat FEAT] [--apply-fea-file]
-                [--hinted | --no-hinted] [--liga | --no-liga] [--nf-mono]
+                [--hinted | --no-hinted] [--liga | --no-liga] [--keep-infinite-arrow]
+                [--remove-tag-liga] [--line-height LINE_HEIGHT] [--nf-mono]
                 [--cn-narrow] [--cn-scale-factor CN_SCALE_FACTOR] [--nerd-font |
                 --no-nerd-font] [--cn | --no-cn] [--cn-both] [--ttf-only]
                 [--least-styles] [--font-patcher] [--cache] [--cn-rebuild]
@@ -648,10 +653,16 @@ Feature Options:
   --no-hinted           在 NF / CN / NF-CN 中使用 unhinted 字体作为基础字体
   --liga                保留所有连字（默认）
   --no-liga             删除所有连字
+  --keep-infinite-arrow
+                        在 hinted 字体中保留无限箭头连字（默认删除）
+  --remove-tag-liga     移除纯文本标签连字，例如 `[TODO]`
+  --line-height LINE_HEIGHT
+                        行高的缩放因子 (例如 1.1)
   --nf_mono             固定 Nerd Font 图标的宽度
   --cn-narrow           减小中文/日文字形间距（同时会让系统无法识别为等宽字体）
   --cn-scale-factor CN_SCALE_FACTOR
-                        中文/日文字形的缩放因子（例如 1.1）
+                        中文/日文字形的缩放因子。格式：<因子> 或
+                        <宽度因子>,<高度因子> (例如 1.1 或 1.2,1.1)
 
 Build Options:
   --nerd-font           构建 Nerd-Font 版本（默认）

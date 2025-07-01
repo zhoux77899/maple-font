@@ -7,7 +7,6 @@ from urllib.request import Request, urlopen
 from zipfile import ZIP_DEFLATED, ZipFile
 from fontTools.ttLib import TTFont
 from fontTools.merge import Merger
-from glyphsLib import GSFont
 
 
 def is_ci():
@@ -27,7 +26,7 @@ def is_ci():
     return False
 
 
-def run(command, extra_args=None, log=not is_ci()):
+def run(command: str | list[str], extra_args: list[str] | None = None, log=not is_ci()):
     """
     Run a command line interface (CLI) command.
     """
@@ -38,13 +37,15 @@ def run(command, extra_args=None, log=not is_ci()):
     subprocess.run(
         command + extra_args,
         stdout=subprocess.DEVNULL if not log else None,
+        stderr=subprocess.DEVNULL if not log else None,
         check=True,
     )
 
 
-def set_font_name(font: TTFont, name: str, id: int):
-    font["name"].setName(name, nameID=id, platformID=1, platEncID=0, langID=0x0)  # type: ignore
+def set_font_name(font: TTFont, name: str, id: int, mac: bool | None = None):
     font["name"].setName(name, nameID=id, platformID=3, platEncID=1, langID=0x409)  # type: ignore
+    if mac:
+        font["name"].setName(name, nameID=id, platformID=1, platEncID=0, langID=0x0)  # type: ignore
 
 
 def get_font_name(font: TTFont, id: int) -> str:
@@ -187,6 +188,12 @@ def download_cn_base_font(
 
 
 def match_unicode_names(file_path: str) -> dict[str, str]:
+    try:
+        from glyphsLib import GSFont
+    except ImportError:
+        print("❗ glyphsLib is not found. Please run `pip install glyphsLib`")
+        exit(1)
+
     font = GSFont(file_path)
     result = {}
 
@@ -377,3 +384,61 @@ def merge_ttfonts(
     except Exception as e:
         print(f"Error merging fonts: {str(e)}")
         raise
+
+
+def add_ital_axis_to_stat(font: TTFont):
+    """
+    Add fake ``ital`` axis to append "italic" to subfamily name in italic variable font
+    """
+    from fontTools.ttLib.tables import otTables as ot
+
+    name = font["name"]
+    stat_table = font["STAT"].table  # type: ignore
+
+    # Add fake axis name
+    id = name._findUnusedNameID()  # type: ignore
+    set_font_name(font, "Italic", id, True)
+
+    # Add AxisRecord
+    axis = ot.AxisRecord()  # type: ignore
+    axis.AxisTag = "ital"
+    axis.AxisOrdering = len(stat_table.DesignAxisRecord.Axis)
+    axis.AxisNameID = id
+    stat_table.DesignAxisRecord.Axis.append(axis)
+    stat_table.DesignAxisCount += 1
+
+    # Add AxisValue
+    axisValRec = ot.AxisValue()  # type: ignore
+    axisValRec.AxisIndex = axis.AxisOrdering
+    axisValRec.Flags = 0
+    axisValRec.Format = 1
+    axisValRec.ValueNameID = id
+    axisValRec.Value = 1.0
+    stat_table.AxisValueArray.AxisValue.append(axisValRec)
+    stat_table.AxisValueCount += 1
+
+
+def adjust_line_height(font: TTFont, factor: float) -> None:
+    """
+    Adjust the line height of the font by modifying the hhea and OS/2 table.
+
+    Offset is ``int(550 * (factor - 1))``
+    """
+    if factor == 1.0:
+        return
+
+    if "hhea" not in font:
+        raise ValueError("No hhea table found.")
+    if "OS/2" not in font:
+        raise ValueError("No OS/2 table found.")
+
+    hhea = font["hhea"]
+    os2 = font["OS/2"]
+    offset = int(550 * (factor - 1))  # type: ignore
+    hhea.ascender += offset  # type: ignore
+    hhea.descender -= offset  # type: ignore
+    os2.sTypoAscender += offset  # type: ignore
+    os2.sTypoDescender -= offset  # type: ignore
+    os2.usWinAscent += offset  # type: ignore
+    # this is correct since this value is positive
+    os2.usWinDescent += offset  # type: ignore
