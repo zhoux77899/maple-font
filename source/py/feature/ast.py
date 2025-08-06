@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 import re
+from typing import Literal
 
 
 class Line:
@@ -208,8 +209,6 @@ __PUNCTUATION_CN_MAP = {
     "—": "emdash",
 }
 
-LATIN_PUNCTUATIONS = list(__PUNCTUATION_MAP.keys())
-
 
 def __gly(g: str | Clazz | Sequence[str | Clazz] | None) -> str:
     if not g:
@@ -277,7 +276,7 @@ def gly(g: str | Clazz | Sequence[str | Clazz], suffix: str = "", overwrite=Fals
     return __gly(g) + suffix
 
 
-def gly_seq(g: str | list[str], variant: str):
+def gly_seq(g: str | list[str], variant: Literal["sta", "mid", "end"]):
     """
     >>> gly_seq("{", "sta")
     "braceleft.sta.seq"
@@ -452,7 +451,6 @@ def subst_liga(
     if extra_rules is None:
         extra_rules = []
 
-
     def to_list(item):
         if item is None:
             return []
@@ -465,7 +463,9 @@ def subst_liga(
     if ign_prefix:
         generated_ignores.append(ign(ign_prefix, source_arr[0], source_arr[1:]))
     if ign_suffix:
-        generated_ignores.append(ign(None, source_arr[0], source_arr[1:] + [ign_suffix]))
+        generated_ignores.append(
+            ign(None, source_arr[0], source_arr[1:] + [ign_suffix])
+        )
 
     subst_rules = []
     if not surround:

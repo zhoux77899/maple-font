@@ -9,7 +9,7 @@ def main():
 
     command = parser.add_subparsers(dest="command", help="Total tasks")
 
-    nerdfont_parser = command.add_parser("nerd-font", help="Build Nerd-Font base font")
+    nerdfont_parser = command.add_parser("nf", help="Build Nerd-Font base font")
     nerdfont_parser.add_argument(
         "--no-update",
         action="store_true",
@@ -39,11 +39,26 @@ def main():
     )
 
     page_parser = command.add_parser("page", help="Update landing page data")
-    page_parser.add_argument("--woff2", action="store_true", help="Generate new woff2 fonts")
+    page_parser.add_argument(
+        "--woff2", action="store_true", help="Generate new woff2 fonts"
+    )
     page_parser.add_argument("--commit", action="store_true", help="Commit changes")
 
+    cn = command.add_parser("cn", help="Rebuild CN static font")
+    cn.add_argument("--pull", action="store_true", help="pull the latest CN source files")
+    cn.add_argument("--rebuild", action="store_true", help="rebuild the CN static font")
+
+    publish_parser = command.add_parser(
+        "publish", help="Publish the font archives to GitHub Release"
+    )
+    publish_parser.add_argument(
+        "--write",
+        action="store_true",
+        help="Write changelog to release note file (auto write in CI)",
+    )
+
     args = parser.parse_args()
-    if args.command == "nerd-font":
+    if args.command == "nf":
         from source.py.task.nerdfont import nerd_font
 
         nerd_font(args.no_update)
@@ -61,6 +76,14 @@ def main():
         from source.py.task.page import page
 
         page("./maple-font-page", "./fonts/Variable", args.woff2, args.commit)
+    elif args.command == "cn":
+        from source.py.task.cn import cn
+
+        cn("./source/cn", args.pull, args.rebuild)
+    elif args.command == "publish":
+        from source.py.task.publish import publish
+
+        publish(args.write)
     else:
         print("Test only")
         from source.py.in_browser import main

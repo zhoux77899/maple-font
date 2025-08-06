@@ -10,7 +10,7 @@ import signal
 import time
 from functools import partial
 from os import environ, getcwd, getpid, kill, listdir, makedirs, path, remove, getenv
-from typing import Callable
+from typing import Callable, Literal
 from fontTools.ttLib import TTFont, newTable
 from fontTools.feaLib.builder import addOpenTypeFeatures, addOpenTypeFeaturesFromString
 from ttfautohint import StemWidthMode, ttfautohint
@@ -19,9 +19,8 @@ from source.py.utils import (
     adjust_line_height,
     check_font_patcher,
     check_directory_hash,
-    get_directory_hash,
     verify_glyph_width,
-    compress_folder,
+    archive_fonts,
     download_cn_base_font,
     get_font_forge_bin,
     is_ci,
@@ -40,7 +39,7 @@ from source.py.feature import (
 )
 
 
-FONT_VERSION = "v7.4"
+FONT_VERSION = "v7.5"
 # =========================================================================================
 
 
@@ -187,7 +186,12 @@ def parse_args(args: list[str] | None = None):
     feature_group.add_argument(
         "--nf-mono",
         action="store_true",
-        help="Fixed Nerd Font icons' width",
+        help="Make Nerd Font icons' width fixed",
+    )
+    feature_group.add_argument(
+        "--nf-propo",
+        action="store_true",
+        help="Make Nerd Font icons' width variable, override `--nf-mono`",
     )
     feature_group.add_argument(
         "--cn-narrow",
@@ -203,6 +207,7 @@ def parse_args(args: list[str] | None = None):
     build_group = parser.add_argument_group("Build Options")
     nf_group = build_group.add_mutually_exclusive_group()
     nf_group.add_argument(
+        "--nf",
         "--nerd-font",
         dest="nerd_font",
         default=None,
@@ -210,6 +215,7 @@ def parse_args(args: list[str] | None = None):
         help="Build Nerd-Font version (default)",
     )
     nf_group.add_argument(
+        "--no-nf",
         "--no-nerd-font",
         dest="nerd_font",
         default=None,
@@ -330,8 +336,10 @@ class FontConfig:
             "enable": True,
             # target version of Nerd-Font if font-patcher not exists
             "version": "3.2.1",
-            # whether to make icon width fixed
-            "mono": False,
+            # whether to make icons' x-width fixed
+            "mono": None,
+            # whether to make icons' glyph width variable, override "mono"
+            "propo": None,
             # prefer to use Font Patcher instead of using prebuild NerdFont base font
             # if you want to custom build Nerd-Font using font-patcher, you need to set this to True
             "use_font_patcher": False,
@@ -362,7 +370,7 @@ class FontConfig:
             # whether to hint CN font (will increase about 33% size)
             "use_hinted": False,
             # whether to use pre-instantiated static CN font as base font
-            "use_static_base_font": True,
+            "use_static_base_font": True,  # Deprecated. Always `True`
             # scale factor for CN glyphs
             "scale_factor": (1.0, 1.0),
         }
@@ -452,6 +460,8 @@ class FontConfig:
         if args.liga is not None:
             self.enable_liga = args.liga
 
+        if self.debug:
+            self.nerd_font["enable"] = False
         if args.nerd_font is not None:
             self.nerd_font["enable"] = args.nerd_font
 
@@ -466,6 +476,11 @@ class FontConfig:
 
         if args.nf_mono:
             self.nerd_font["mono"] = args.nf_mono
+            self.nerd_font["enable"] = True
+
+        if args.nf_propo:
+            self.nerd_font["propo"] = args.nf_propo
+            self.nerd_font["enable"] = True
 
         if args.cn is not None:
             self.cn["enable"] = args.cn
@@ -488,8 +503,10 @@ class FontConfig:
             self.nerd_font["use_font_patcher"] = True
 
         if args.cn_rebuild:
-            self.cn["clean_cache"] = True
-            self.cn["use_static_base_font"] = False
+            print("⚠️ `--cn-rebuild` is deprecated. Run `python task.py cn-rebuild` instead")
+            self.cn["enable"] = True
+            # self.cn["clean_cache"] = True
+            # self.cn["use_static_base_font"] = False
 
         name_arr = [word.capitalize() for word in self.family_name.split(" ")]
         if self.use_normal_preset:
@@ -507,6 +524,19 @@ class FontConfig:
 
     def should_build_nf_cn(self) -> bool:
         return self.cn["with_nerd_font"] and self.nerd_font["enable"]
+
+    def get_nf_suffix(self) -> Literal["Mono", "Propo", ""]:
+        extra_args = self.nerd_font["extra_args"]
+        if (
+            self.nerd_font["mono"]
+            or "-s" in extra_args
+            or "--mono" in extra_args
+            or "--single-width-glyphs" in extra_args
+        ):
+            return "Mono"
+        elif self.nerd_font["propo"] or "--variable-width-glyphs" in extra_args:
+            return "Propo"
+        return ""
 
     def toggle_nf_cn_config(self) -> bool:
         if not self.nerd_font["enable"]:
@@ -623,15 +653,19 @@ class BuildOption:
         )
         self.github_mirror = environ.get("GITHUB", "github.com")
 
-    def load_cn_dir_and_suffix(self, with_nerd_font: bool) -> None:
-        if with_nerd_font:
+    def load_cn_dir_and_suffix(self, font_config: FontConfig) -> None:
+        suffix = font_config.get_nf_suffix()
+        if font_config.should_build_nf_cn():
             self.cn_base_font_dir = self.output_nf
-            self.cn_suffix = "NF CN"
-            self.cn_suffix_compact = "NF-CN"
+            self.cn_suffix = f"NF{suffix} CN"
+            self.cn_suffix_compact = f"NF{suffix}-CN"
         else:
-            self.cn_base_font_dir = joinPaths(self.output_dir, "TTF")
+            self.cn_base_font_dir = self.ttf_base_dir
             self.cn_suffix = self.cn_suffix_compact = "CN"
-        self.output_cn = joinPaths(self.output_dir, self.cn_suffix_compact)
+        self.output_cn = joinPaths(
+            self.output_dir,
+            self.cn_suffix_compact.replace(suffix, ""),
+        )
 
     def should_use_font_patcher(
         self, config: FontConfig, should_exit: bool = True
@@ -664,108 +698,106 @@ class BuildOption:
     def should_build_cn(self, config: FontConfig) -> bool:
         if not config.cn["enable"] and not config.use_cn_both:
             print(
-                '\nNo `"cn.enable": true` in config.json or no `--cn` / `--cn-both` in argv. Skip CN build.'
+                '\nNo `"cn.enable": true` in config.json or `--cn` / `--cn-both` in argv. Skip CN build.'
             )
             return False
-        return self.__ensure_cn_static_fonts(
-            clean_cache=config.cn["clean_cache"],
-            use_static=config.cn["use_static_base_font"],
-            pool_size=config.pool_size,
-        )
+        return self.__ensure_cn_static_fonts(clean_cache=config.cn["clean_cache"])
 
-    def __ensure_cn_static_fonts(
-        self, clean_cache: bool, use_static: bool, pool_size: int
-    ) -> bool:
+    def __ensure_cn_static_fonts(self, clean_cache: bool) -> bool:
         if clean_cache:
             print("Clean CN static fonts")
             shutil.rmtree(self.cn_static_dir, ignore_errors=True)
 
-        if use_static and self.__check_cn_exists():
+        if self.__check_cn_exists():
             return True
 
         tag = "cn-base"
-        if is_ci() or use_static:
-            zip_path = "cn-base-static.zip"
-            if download_cn_base_font(
-                tag=tag,
-                zip_path=zip_path,
-                target_dir=self.cn_static_dir,
-                github_mirror=self.github_mirror,
-            ):
-                if self.__check_cn_exists():
-                    return True
-                else:
-                    print(
-                        f"❗Invalid CN static fonts hash, please delete {zip_path} in root dir and rerun the script"
-                    )
-                    return False
-
-        # Try using variable fonts if static fonts aren't available
-        if path.exists(self.cn_variable_dir) and self.__check_file_count(
-            self.cn_variable_dir, 2, "-VF.ttf"
-        ):
-            print(
-                "No static CN fonts but detect variable version, start instantiating..."
-            )
-            self.__instantiate_cn_base(
-                cn_variable_dir=self.cn_variable_dir,
-                cn_static_dir=self.cn_static_dir,
-                pool_size=pool_size,
-            )
-            return True
-
-        # Download variable fonts and instantiate if necessary
+        zip_path = "cn-base-static.zip"
         if download_cn_base_font(
             tag=tag,
-            zip_path="cn-base-variable.zip",
-            target_dir=self.cn_variable_dir,
+            zip_path=zip_path,
+            target_dir=self.cn_static_dir,
             github_mirror=self.github_mirror,
         ):
-            self.__instantiate_cn_base(
-                cn_variable_dir=self.cn_variable_dir,
-                cn_static_dir=self.cn_static_dir,
-                pool_size=pool_size,
+            if self.__check_cn_exists():
+                return True
+
+            print(
+                f"❗Invalid CN static fonts hash, please delete {zip_path} in root dir and rerun the script"
             )
-            return True
+            return False
+
+        # # Try using variable fonts if static fonts aren't available
+        # if path.exists(self.cn_variable_dir) and self.__check_file_count(
+        #     self.cn_variable_dir, 2, "-VF.ttf"
+        # ):
+        #     print(
+        #         "No static CN fonts but detect variable version, start instantiating..."
+        #     )
+        #     self.__instantiate_cn_base(
+        #         cn_variable_dir=self.cn_variable_dir,
+        #         cn_static_dir=self.cn_static_dir,
+        #         pool_size=pool_size,
+        #     )
+        #     return True
+
+        # # Download variable fonts and instantiate if necessary
+        # if download_cn_base_font(
+        #     tag=tag,
+        #     zip_path="cn-base-variable.zip",
+        #     target_dir=self.cn_variable_dir,
+        #     github_mirror=self.github_mirror,
+        # ):
+        #     self.__instantiate_cn_base(
+        #         cn_variable_dir=self.cn_variable_dir,
+        #         cn_static_dir=self.cn_static_dir,
+        #         pool_size=pool_size,
+        #     )
+        #     return True
 
         print("\nCN base fonts don't exist. Skip CN build.")
         return False
 
     def __check_cn_exists(self) -> bool:
         static_path = self.cn_static_dir
+        print(f"\nChecking CN static font directory {static_path}")
         if not path.exists(static_path):
+            print("🔎 Does not exist")
             return False
         if not self.__check_file_count(static_path):
+            print("🔎 Exists but not enough font files")
             return False
 
         if check_directory_hash(static_path):
+            print("✅ Hash verified")
             return True
+        print("❌ Hash mismatch, removing directory")
         shutil.rmtree(static_path)
         return False
 
-    def __instantiate_cn_base(
-        self, cn_variable_dir: str, cn_static_dir: str, pool_size: int
-    ):
-        print("=========================================")
-        print("Instantiating CN Base font, be patient...")
-        print("=========================================")
-        run_build(
-            pool_size=pool_size,
-            fn=partial(
-                instantiate_cn_var, base_dir=cn_variable_dir, output_dir=cn_static_dir
-            ),
-            dir=cn_variable_dir,
-        )
-        run_build(
-            pool_size=pool_size,
-            fn=partial(optimize_cn_base, base_dir=cn_static_dir),
-            dir=cn_static_dir,
-        )
-        run(f"ftcli name del-mac-names -r {cn_static_dir}")
-        with open(f"{self.cn_static_dir}.sha256", "w") as f:
-            f.write(get_directory_hash(self.cn_static_dir))
-            f.flush()
-        print(f"Update {self.cn_static_dir}.sha256")
+    # def __instantiate_cn_base(
+    #     self, cn_variable_dir: str, cn_static_dir: str, pool_size: int
+    # ):
+    #     print("=========================================")
+    #     print("Instantiating CN Base font, be patient...")
+    #     print("=========================================")
+    #     run_build(
+    #         pool_size=pool_size,
+    #         fn=partial(
+    #             instantiate_cn_var, base_dir=cn_variable_dir, output_dir=cn_static_dir
+    #         ),
+    #         dir=cn_variable_dir,
+    #     )
+    #     run_build(
+    #         pool_size=pool_size,
+    #         fn=partial(optimize_cn_base, base_dir=cn_static_dir),
+    #         dir=cn_static_dir,
+    #     )
+    #     run(f"ftcli name del-mac-names -r {cn_static_dir}")
+    #     with open(f"{self.cn_static_dir}.sha256", "w") as f:
+    #         f.write(get_directory_hash(self.cn_static_dir))
+    #         f.flush()
+    #     print(f"Update {self.cn_static_dir}.sha256")
 
     def __check_file_count(
         self, dir: str, minCount: int = 16, end: str | None = None
@@ -792,20 +824,20 @@ def handle_ligatures(
     )
 
 
-def instantiate_cn_var(f: str, base_dir: str, output_dir: str):
-    run(
-        f"ftcli converter var2static -out {output_dir} {joinPaths(base_dir, f)}",
-        log=True,
-    )
+# def instantiate_cn_var(f: str, base_dir: str, output_dir: str):
+#     run(
+#         f"ftcli converter var2static -out {output_dir} {joinPaths(base_dir, f)}",
+#         log=True,
+#     )
 
 
-def optimize_cn_base(f: str, base_dir: str):
-    font_path = joinPaths(base_dir, f)
-    print(f"✨ Optimize {font_path}")
-    run(f"ftcli font correct-contours {font_path}")
-    run(
-        f"ftcli font del-table -t kern -t GPOS {font_path}",
-    )
+# def optimize_cn_base(f: str, base_dir: str):
+#     font_path = joinPaths(base_dir, f)
+#     print(f"✨ Optimize {font_path}")
+#     run(f"ftcli font correct-contours {font_path}")
+#     run(
+#         f"ftcli font del-table -t kern -t GPOS {font_path}",
+#     )
 
 
 def parse_style_name(style_name_compact: str, skip_subfamily_list: list[str]):
@@ -1153,10 +1185,12 @@ def build_mono_autohint(f: str, font_config: FontConfig, build_option: BuildOpti
 def build_nf_by_prebuild_nerd_font(
     font_basename: str, font_config: FontConfig, build_option: BuildOption
 ) -> TTFont:
-    prefix = "-Mono" if font_config.nerd_font["mono"] else ""
+    suffix = font_config.get_nf_suffix()
+    if suffix:
+        suffix = "-" + suffix
     return merge_ttfonts(
         base_font_path=joinPaths(build_option.ttf_base_dir, font_basename),
-        extra_font_path=f"{build_option.src_dir}/MapleMono-NF-Base{prefix}.ttf",
+        extra_font_path=f"{build_option.src_dir}/MapleMono-NF-Base{suffix}.ttf",
     )
 
 
@@ -1175,7 +1209,9 @@ def build_nf_by_font_patcher(
         build_option.output_nf,
     ] + font_config.nerd_font["glyphs"]
 
-    if font_config.nerd_font["mono"]:
+    if font_config.nerd_font["propo"]:
+        _nf_args += ["--variable-width-glyphs"]
+    elif font_config.nerd_font["mono"]:
         _nf_args += ["--mono"]
 
     extra_args = font_config.nerd_font["extra_args"]
@@ -1183,16 +1219,7 @@ def build_nf_by_font_patcher(
 
     run(_nf_args + [joinPaths(build_option.ttf_base_dir, font_basename)])
 
-    nf_file_name = "NerdFont"
-    if (
-        font_config.nerd_font["mono"]
-        or "-s" in extra_args
-        or "--mono" in extra_args
-        or "--single-width-glyphs" in extra_args
-    ):
-        nf_file_name += "Mono"
-    elif "--variable-width-glyphs" in extra_args:
-        nf_file_name += "Propo"
+    nf_file_name = "NerdFont" + font_config.get_nf_suffix()
 
     _path = joinPaths(
         build_option.output_nf, font_basename.replace("-", f"{nf_file_name}-")
@@ -1213,7 +1240,7 @@ def build_nf(
     font_config: FontConfig,
     build_option: BuildOption,
 ):
-    print(f"👉 NerdFont version for {f}")
+    print(f"👉 NerdFont{font_config.get_nf_suffix()} version for {f}")
     nf_font = get_ttfont(f, font_config, build_option)
 
     # format font name
@@ -1226,13 +1253,14 @@ def build_nf(
         )
     )
 
-    postscript_name = f"{font_config.family_name_compact}-NF-{style_compact_nf}"
+    nf_sym = f"NF{font_config.get_nf_suffix()}"
+    postscript_name = f"{font_config.family_name_compact}-{nf_sym}-{style_compact_nf}"
 
     update_font_names(
         font=nf_font,
-        family_name=f"{font_config.family_name} NF{style_nf_with_prefix_space}",
+        family_name=f"{font_config.family_name} {nf_sym}{style_nf_with_prefix_space}",
         style_name=style_in_2,
-        full_name=f"{font_config.family_name} NF {style_in_17}",
+        full_name=f"{font_config.family_name} {nf_sym} {style_in_17}",
         version_str=font_config.version_str,
         postscript_name=postscript_name,
         unique_identifier=get_unique_identifier(
@@ -1240,17 +1268,21 @@ def build_nf(
             postscript_name=postscript_name,
         ),
         is_skip_subfamily=is_skip_sufamily,
-        preferred_family_name=f"{font_config.family_name} NF",
+        preferred_family_name=f"{font_config.family_name} {nf_sym}",
         preferred_style_name=style_in_17,
     )
 
     adjust_line_height(nf_font, font_config.line_height_factor)
 
-    verify_glyph_width(
-        font=nf_font,
-        expect_widths=font_config.get_valid_glyph_width_list(),
-        file_name=postscript_name,
-    )
+    if not (
+        build_option.should_use_font_patcher(font_config)
+        or font_config.get_nf_suffix() == "Propo"
+    ):
+        verify_glyph_width(
+            font=nf_font,
+            expect_widths=font_config.get_valid_glyph_width_list(),
+            file_name=postscript_name,
+        )
 
     target_path = joinPaths(
         build_option.output_nf,
@@ -1376,11 +1408,18 @@ def build_cn(f: str, font_config: FontConfig, build_option: BuildOption):
 
     adjust_line_height(cn_font, font_config.line_height_factor)
 
-    verify_glyph_width(
-        font=cn_font,
-        expect_widths=font_config.get_valid_glyph_width_list(True),
-        file_name=postscript_name,
-    )
+    if not (
+        font_config.should_build_nf_cn()
+        and (
+            build_option.should_use_font_patcher(font_config)
+            or font_config.get_nf_suffix() == "Propo"
+        )
+    ):
+        verify_glyph_width(
+            font=cn_font,
+            expect_widths=font_config.get_valid_glyph_width_list(True),
+            file_name=postscript_name,
+        )
 
     target_path = joinPaths(
         build_option.output_cn,
@@ -1452,8 +1491,8 @@ def main(args: list[str] | None = None, version: str | None = None):
     parsed_args = parse_args(args)
 
     font_config = FontConfig(args=parsed_args, version=version)
-    build_option = BuildOption(use_hinted=parsed_args.hinted)
-    build_option.load_cn_dir_and_suffix(font_config.should_build_nf_cn())
+    build_option = BuildOption(use_hinted=font_config.use_hinted)
+    build_option.load_cn_dir_and_suffix(font_config)
 
     if parsed_args.dry:
         font_config.nerd_font["use_font_patcher"] = (
@@ -1622,7 +1661,7 @@ def main(args: list[str] | None = None, version: str | None = None):
                 font_config=font_config,
                 build_option=build_option,
             ),
-            build_option.output_ttf,
+            build_option.ttf_base_dir,
             target_styles,
         )
         build_option.is_nf_built = True
@@ -1657,7 +1696,7 @@ def main(args: list[str] | None = None, version: str | None = None):
         _build_cn()
 
         if font_config.use_cn_both and font_config.toggle_nf_cn_config():
-            build_option.load_cn_dir_and_suffix(font_config.should_build_nf_cn())
+            build_option.load_cn_dir_and_suffix(font_config)
             _build_cn()
 
         build_option.is_cn_built = True
@@ -1711,7 +1750,7 @@ def main(args: list[str] | None = None, version: str | None = None):
                 if should_use_cache:
                     continue
 
-            sha256, zip_file_name_without_ext = compress_folder(
+            sha256, zip_file_name_without_ext = archive_fonts(
                 family_name_compact=font_config.family_name_compact,
                 suffix=suffix,
                 source_file_or_dir_path=joinPaths(build_option.output_dir, f),

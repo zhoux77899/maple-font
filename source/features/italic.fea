@@ -6,7 +6,6 @@
 @Comma = [comma comma.cv61];
 @Question = [question question.cv62];
 @Uppercase = [A Aacute Abreve Abreveacute Abrevedotbelow Abrevegrave Abrevehookabove Abrevetilde Acaron Acircumflex Acircumflexacute Acircumflexdotbelow Acircumflexgrave Acircumflexhookabove Acircumflextilde Adieresis Adotbelow Agrave Ahookabove Amacron Aogonek Aring Atilde AE AEacute B C Cacute Ccaron Ccedilla Ccircumflex Cdotaccent D Eth Dcaron Dcroat E Eacute Ebreve Ecaron Ecircumflex Ecircumflexacute Ecircumflexdotbelow Ecircumflexgrave Ecircumflexhookabove Ecircumflextilde Edieresis Edotaccent Edotbelow Egrave Ehookabove Emacron Eogonek Eopen Etilde Schwa F G Gacute Gbreve Gcaron Gcircumflex Gcommaaccent Gdotaccent H Hbar Hcircumflex I IJ IJ_acute Iacute Ibreve Icircumflex Idieresis Idotaccent Idotbelow Igrave Ihookabove Imacron Iogonek Itilde J Jcircumflex K Kcommaaccent L Lacute Lcaron Lcommaaccent Ldot Lslash M N Nacute Ncaron Ncommaaccent Ntilde Eng O Oacute Obreve Ocircumflex Ocircumflexacute Ocircumflexdotbelow Ocircumflexgrave Ocircumflexhookabove Ocircumflextilde Odieresis Odotbelow Ograve Ohookabove Ohorn Ohornacute Ohorndotbelow Ohorngrave Ohornhookabove Ohorntilde Ohungarumlaut Omacron Oogonek Oslash Oslashacute Otilde OE P Thorn Q R Racute Rcaron Rcommaaccent S Sacute Scaron Scedilla Scircumflex Scommaaccent Germandbls T Tbar Tcaron Tcedilla Tcommaaccent U Uacute Ubreve Ucircumflex Udieresis Udotbelow Ugrave Uhookabove Uhorn Uhornacute Uhorndotbelow Uhorngrave Uhornhookabove Uhorntilde Uhungarumlaut Umacron Uogonek Uring Utilde V W Wacute Wcircumflex Wdieresis Wgrave X Y Yacute Ycircumflex Ydieresis Ydotbelow Ygrave Yhookabove Ymacron Ytilde Z Zacute Zcaron Zdotaccent A-cy Be-cy Ve-cy Ge-cy Gje-cy Gheupturn-cy Ghestroke-cy De-cy Ie-cy Io-cy Zhe-cy Ze-cy Ii-cy Iishort-cy Ka-cy Kje-cy El-cy Em-cy En-cy O-cy Pe-cy Er-cy Es-cy Te-cy U-cy Ushort-cy Ef-cy Ha-cy Che-cy Tse-cy Sha-cy Shcha-cy Dzhe-cy Softsign-cy Yeru-cy Hardsign-cy Lje-cy Nje-cy Dze-cy E-cy Ereversed-cy I-cy Yi-cy Je-cy Tshe-cy Iu-cy Ia-cy Dje-cy Kadescender-cy Endescender-cy Ustraight-cy Ustraightstroke-cy Chedescender-cy Shha-cy Schwa-cy Zhedieresis-cy Zedieresis-cy Idieresis-cy Odieresis-cy Obarred-cy Chedieresis-cy Alpha Beta Gamma Delta Epsilon Zeta Eta Theta Iota Kappa Lambda Mu Nu Xi Omicron Pi Rho Sigma Tau Upsilon Phi Chi Psi Omega Alphatonos Epsilontonos Etatonos Iotatonos Omicrontonos Upsilontonos Omegatonos Iotadieresis Upsilondieresis KaiSymbol];
-@NormalSeparator = [braceleft braceright bracketleft bracketright parenleft parenright bar slash backslash];
 @Space = [space nbspace];
 @A = [A a a.cv31];
 @B = [B b];
@@ -1009,8 +1008,8 @@ feature calt {
 
   # >=
   lookup greater_equal.liga {
-    ignore sub [greater equal] greater' equal;
-    ignore sub greater' equal [less greater equal exclam SPC @NormalSeparator];
+    ignore sub [greater equal bar] greater' equal;
+    ignore sub greater' equal [less greater equal exclam SPC];
     sub SPC equal' by greater_equal.liga;
     sub greater' equal by SPC;
   } greater_equal.liga;
@@ -1018,7 +1017,7 @@ feature calt {
   # <=
   lookup less_equal.liga {
     ignore sub [less equal] less' equal;
-    ignore sub less' equal [less greater equal exclam SPC @NormalSeparator];
+    ignore sub less' equal [less greater equal exclam bar SPC];
     ignore sub parenleft @Question less' equal;
     sub SPC equal' by less_equal.liga;
     sub less' equal by SPC;
@@ -1167,7 +1166,7 @@ feature calt {
   # \\ \' \.
   lookup escape {
 
-    @Escape = [braceleft braceright bracketleft bracketright parenleft parenright less greater period comma hyphen underscore equal plus colon semicolon question exclam at numbersign dollar percent asciicircum ampersand asterisk quotesingle quotedbl slash backslash bar grave asciitilde @Comma @Question];
+    @Escape = [asciicircum dollar quotedbl quotesingle grave period asterisk plus parenleft parenright bracketleft bracketright braceleft braceright bar slash backslash @Question];
     ignore sub backslash.liga backslash' @Escape;
     ignore sub backslash' percent percent;
     sub backslash' @Escape by backslash.liga;
@@ -1179,9 +1178,22 @@ feature calt {
     ignore sub hyphen' hyphen [less greater hyphen bar];
     ignore sub less [numbersign exclam] hyphen' hyphen;
     ignore sub parenleft @Question less exclam hyphen' hyphen;
+    sub bar SPC hyphen' less @Var by hyphen_hyphen.liga;
+    sub bar hyphen' hyphen less @Var by SPC;
+    sub bar SPC hyphen' @Var by hyphen_hyphen.liga;
+    sub bar hyphen' hyphen @Var by SPC;
     sub SPC hyphen' by hyphen_hyphen.liga;
     sub hyphen' hyphen by SPC;
   } hyphen_hyphen.liga;
+
+  # --
+  lookup hyphen_hyphen.liga__REGEX__ {
+    ignore sub [less greater hyphen exclam] hyphen' hyphen less;
+    sub SPC hyphen' less @Var by hyphen_hyphen.liga;
+    sub hyphen' hyphen less @Var by SPC;
+    sub bar SPC hyphen' @Var by hyphen_hyphen.liga;
+    sub bar hyphen' hyphen @Var by SPC;
+  } hyphen_hyphen.liga__REGEX__;
 
   # >--</
   lookup hyphen_hyphen.liga__ALT__ {
@@ -1247,7 +1259,11 @@ feature calt {
   lookup infinite_hyphen {
     @HyphenStart = [hyphen.sta.seq hyphen.mid.seq];
     ignore sub less' [exclam numbersign] hyphen hyphen;
-    ignore sub bar bar' hyphen;
+    ignore sub [bar plus] bar' hyphen;
+    ignore sub bar' hyphen hyphen @Var;
+    ignore sub bar hyphen' hyphen @Var;
+    ignore sub bar' hyphen hyphen less @Var;
+    ignore sub bar hyphen' hyphen less @Var;
     ignore sub hyphen bar' bar;
     ignore sub hyphen hyphen' bar;
     ignore sub parenleft @Question less exclam hyphen' hyphen;
@@ -1502,7 +1518,9 @@ feature calt {
 
   # todo))
   lookup tag_todo_alt {
-    ignore sub @Var @T' @O @D @O parenright parenright;
+    ignore sub [parenleft period period_period.liga period_period_period.liga @Comma colon colon_colon.liga asciitilde greater_hyphen.end.seq greater_hyphen.end.seq.cv01 hyphen_greater.liga hyphen_greater.liga.cv01 ampersand ampersand.cv01 dollar dollar.cv01 hyphen hyphen.end.seq @Var] @T' @O @D @O parenright parenright;
+    ignore sub @T' @O @D @O parenright parenright [semicolon parenright period];
+    ignore sub [colon colon_colon.liga comma] @Space @T' @O @D @O parenright parenright;
     sub SPC SPC SPC SPC SPC parenright' by tag_todo.liga;
     sub SPC SPC SPC SPC parenright' parenright by SPC;
     sub SPC SPC SPC @O' parenright parenright by SPC;
@@ -1513,7 +1531,9 @@ feature calt {
 
   # fixme))
   lookup tag_fixme_alt {
-    ignore sub @Var @F' @I @X @M @E parenright parenright;
+    ignore sub [parenleft period period_period.liga period_period_period.liga @Comma colon colon_colon.liga asciitilde greater_hyphen.end.seq greater_hyphen.end.seq.cv01 hyphen_greater.liga hyphen_greater.liga.cv01 ampersand ampersand.cv01 dollar dollar.cv01 hyphen hyphen.end.seq @Var] @F' @I @X @M @E parenright parenright;
+    ignore sub @F' @I @X @M @E parenright parenright [semicolon parenright period];
+    ignore sub [colon colon_colon.liga comma] @Space @F' @I @X @M @E parenright parenright;
     sub SPC SPC SPC SPC SPC SPC parenright' by tag_fixme.liga;
     sub SPC SPC SPC SPC SPC parenright' parenright by SPC;
     sub SPC SPC SPC SPC @E' parenright parenright by SPC;
@@ -2014,6 +2034,41 @@ feature cv41 {
   sub rcommaaccent by rcommaaccent.cv41;
 
 } cv41;
+
+feature cv42 {
+
+  cvParameters {
+    FeatUILabelNameID {
+      name "CV42: Alternative italic 7 with middle bar";
+    };
+  };
+
+  sub seven by seven.cv42;
+  sub seven.dnom by seven.dnom.cv42;
+  sub seven.numr by seven.numr.cv42;
+  sub seveninferior by seveninferior.cv42;
+  sub sevensuperior by sevensuperior.cv42;
+
+} cv42;
+
+feature cv43 {
+
+  cvParameters {
+    FeatUILabelNameID {
+      name "CV43: Alternative italic Z and z with middle bar";
+    };
+  };
+
+  sub Z by Z.cv43;
+  sub Zacute by Zacute.cv43;
+  sub Zcaron by Zcaron.cv43;
+  sub Zdotaccent by Zdotaccent.cv43;
+  sub z by z.cv43;
+  sub zacute by zacute.cv43;
+  sub zcaron by zcaron.cv43;
+  sub zdotaccent by zdotaccent.cv43;
+
+} cv43;
 
 feature cv61 {
 
