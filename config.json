@@ -1,7 +1,6 @@
 {
-  "$schema": "./source/schema.json",
   "family_name": "Maple Mono Terminal",
-  "use_hinted": true,
+  "use_hinted": false,
   "pool_size": 4,
   "enable_ligature": true,
   "ttfautohint_param": {},
@@ -54,11 +53,11 @@
     "ss04": "ignore",
     "ss05": "ignore",
     "ss06": "ignore",
-    "ss07": "ignore",
+    "ss07": "enable",
     "ss08": "enable",
-    "ss09": "enable",
-    "ss10": "enable",
-    "ss11": "enable",
+    "ss09": "ignore",
+    "ss10": "ignore",
+    "ss11": "ignore",
     "zero": "enable"
   },
   "nerd_font": {
